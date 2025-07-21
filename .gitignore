@@ -1,0 +1,5 @@
+bot
+.*
+.idea
+.gitignore
+go.sum
