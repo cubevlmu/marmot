@@ -1,18 +1,17 @@
 package main
 
 import (
-	zero "github.com/cubevlmu/CZeroBot"
-	"github.com/cubevlmu/CZeroBot/driver"
-	"github.com/cubevlmu/CZeroBot/log"
 	"marmot/core"
 	_ "marmot/modules"
+	"marmot/onebot"
+	zero "marmot/onebot"
 	"os"
 )
 
 func main() {
 	// init basic services
 	core.InitCommon()
-	log.SetDefaultLogger(core.NewZBLogger())
+	onebot.SetLogger(core.NewZBLogger())
 
 	// init module manager
 	mMgr := core.NewModuleMgr()
@@ -20,7 +19,7 @@ func main() {
 		core.LogError("Failed to init moduleMgr")
 		os.Exit(1)
 	}
-	zero.OnMessage().Handle(mMgr.BroadcastMsg)
+	//zero.OnMessage().Handle()
 	mMgr.LoadAll()
 
 	// reg shutdown hook to cleanup & save data
@@ -32,12 +31,9 @@ func main() {
 	// run bot engine's loop
 	zero.RunAndBlock(&zero.Config{
 		NickName: []string{"bot"},
-		Driver: []zero.Driver{
-			// reverse websocket
-			driver.NewWebSocketServer(16, core.AppConfig.WsUrl, "", func(id int64) {
-				core.Common.BotQQ = id
-				core.LogInfo("Bot id : %v", id)
-			}),
-		},
-	}, nil)
+		Driver: onebot.NewWebSocketServer(16, core.AppConfig.WsUrl, "", func(id int64) {
+			core.Common.BotQQ = id
+			core.LogInfo("Bot id : %v", id)
+		}),
+	}, mMgr.HandleEvent)
 }

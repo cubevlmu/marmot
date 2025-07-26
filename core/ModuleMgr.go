@@ -1,16 +1,14 @@
 package core
 
 import (
-	zero "github.com/cubevlmu/CZeroBot"
-	"marmot/utils"
+	zero "marmot/onebot"
 	"strings"
 )
 
 type IModule interface {
-	Init(mgr *ModuleMgr)
+	Init(mgr *ModuleMgr) bool
 	Stop(mgr *ModuleMgr)
 	Reload(mgr *ModuleMgr)
-	OnMsg(ctx *zero.Ctx)
 }
 
 var registry = make(map[string]func() IModule)
@@ -28,42 +26,70 @@ func createModule(name string) IModule {
 	return nil
 }
 
-type CmdHandler func(args []string, ctx *zero.Ctx) bool
+type CmdHandler func(args []string, ctx *zero.Ctx)
+
+type EventType int
+
+const (
+	ETUnknown EventType = iota
+	ETGroupMsg
+	ETPrivateMsg
+)
+
+type EventHandler func(ctx *zero.Ctx)
+type Event struct {
+	Type    EventType
+	Handler EventHandler
+	Moduel  *IModule
+}
 
 type ModuleMgr struct {
 	loadedModules map[string]IModule
+	events        map[EventType][]Event
 	cmds          map[string]CmdHandler
 }
 
-func NewModuleMgr() *ModuleMgr {
-	return &ModuleMgr{
-		loadedModules: make(map[string]IModule),
-		cmds:          make(map[string]CmdHandler),
-	}
+var sharedInstance *ModuleMgr
+
+func GetModuleMgr() *ModuleMgr {
+	return sharedInstance
 }
 
-func (m *ModuleMgr) RegisterCmd(name string, handle CmdHandler) bool {
-	if _, ok := m.cmds[name]; ok {
+func NewModuleMgr() *ModuleMgr {
+	sharedInstance = &ModuleMgr{
+		loadedModules: make(map[string]IModule),
+		events:        make(map[EventType][]Event),
+		cmds:          make(map[string]CmdHandler),
+	}
+	return sharedInstance
+}
+
+func (m *ModuleMgr) RegisterCmd(label string, handler CmdHandler) bool {
+	_, ok := m.cmds[label]
+	if ok {
+		LogError("Duplicated cmd: %s", label)
 		return false
 	}
-	m.cmds[name] = handle
+	m.cmds[label] = handler
 	return true
 }
 
-func (m *ModuleMgr) OnCmd(str string, ctx *zero.Ctx) bool {
-	cmd, args := utils.ParseInputCmd(str, AppConfig.CmdPrefix)
-	handler, ok := m.cmds[cmd]
+func (m *ModuleMgr) RegisterEvent(tp EventType, handler EventHandler) bool {
+	arr, ok := m.events[tp]
 	if !ok {
-		return false
+		m.events[tp] = make([]Event, 0)
+		arr = m.events[tp]
 	}
-	resultChan := make(chan bool)
-
-	go func() {
-		result := handler(args, ctx)
-		resultChan <- result
-	}()
-
-	return <-resultChan
+	for _, event := range arr {
+		if &event.Handler == &handler {
+			return false
+		}
+	}
+	m.events[tp] = append(arr, Event{
+		Type:    tp,
+		Handler: handler,
+	})
+	return true
 }
 
 func (m *ModuleMgr) UnloadAll() {
@@ -71,21 +97,40 @@ func (m *ModuleMgr) UnloadAll() {
 	for _, module := range m.loadedModules {
 		module.Stop(m)
 	}
-	m.cmds = nil
+	m.events = nil
 	m.loadedModules = nil
 }
 
-func (m *ModuleMgr) BroadcastMsg(z *zero.Ctx) {
-	str := z.MessageString()
-	if strings.HasPrefix(str, AppConfig.CmdPrefix) {
-		r := m.OnCmd(str, z)
-		if !r {
-			LogError("[ModuleMgr] failed to run command, cmd not found or other error")
-		}
+func (m *ModuleMgr) onCmd(msg string, c *zero.Ctx) {
+	lb, arg := parseInputCmd(msg, AppConfig.CmdPrefix)
+	cmd, ok := m.cmds[lb]
+	if !ok {
+		LogError("[ModuleMgr] Command not found: %s", msg)
 		return
 	}
-	for _, module := range m.loadedModules {
-		go module.OnMsg(z)
+	cmd(arg, c)
+}
+
+func (m *ModuleMgr) HandleEvent(c *zero.Ctx) {
+	var msgType EventType
+	if c.Event.PostType == "message" && c.Event.MessageType == "group" {
+		if strings.HasPrefix(c.Event.RawMessage, AppConfig.CmdPrefix) {
+			m.onCmd(c.ExtractPlainText(), c)
+			return
+		} else {
+			msgType = ETGroupMsg
+		}
+	} else if c.Event.PostType == "message" && c.Event.MessageType == "private" {
+		msgType = ETPrivateMsg
+	} else {
+		msgType = ETUnknown
+	}
+
+	r, ok := m.events[msgType]
+	if ok {
+		for _, event := range r {
+			go event.Handler(c)
+		}
 	}
 }
 
@@ -106,7 +151,10 @@ func (m *ModuleMgr) LoadAll() {
 			LogWarn("[ModuleMgr] failed to load module : %s , not found or invalid key", module)
 			continue
 		}
-		r.Init(m)
+		if !r.Init(m) {
+			LogError("[ModuleMgr] failed to load module : %s , init failed", module)
+			continue
+		}
 		m.loadedModules[module] = r
 		count++
 	}
@@ -118,4 +166,14 @@ func (m *ModuleMgr) ReloadAll() {
 		module.Reload(m)
 	}
 	LogInfo("[ModuleMgr] reloaded %d modules", len(m.loadedModules))
+}
+
+func (m *ModuleMgr) ListAll() []string {
+	result := make([]string, len(m.loadedModules))
+	idx := 0
+	for i := range m.loadedModules {
+		result[idx] = i
+		idx++
+	}
+	return result
 }

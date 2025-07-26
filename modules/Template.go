@@ -1,11 +1,11 @@
 package modules
 
 import (
-	zero "github.com/cubevlmu/CZeroBot"
 	"github.com/derekparker/trie"
 	lru "github.com/hashicorp/golang-lru"
 	"gorm.io/gorm"
 	"marmot/core"
+	zero "marmot/onebot"
 )
 
 type Template struct {
@@ -32,10 +32,10 @@ func (t *TemplateEngine) OnMsg(ctx *zero.Ctx) {
 	ctx.Send(*r)
 }
 
-func (t *TemplateEngine) onAddCmd(args []string, ctx *zero.Ctx) bool {
+func (t *TemplateEngine) onAddCmd(args []string, ctx *zero.Ctx) {
 	if len(args) != 2 {
 		ctx.Send("错误的内容，触发器或者内容为空")
-		return false
+		return
 	}
 	trigger := args[0]
 	content := args[1]
@@ -43,17 +43,16 @@ func (t *TemplateEngine) onAddCmd(args []string, ctx *zero.Ctx) bool {
 	r := t.addTemplate(trigger, content)
 	if r == -1 {
 		ctx.SendGroupMessage(ctx.Event.GroupID, "添加失败,触发器重复")
-		return false
+		return
 	}
 
 	ctx.SendGroupMessage(ctx.Event.GroupID, "添加成功!")
-	return true
 }
 
-func (t *TemplateEngine) onRemoveCmd(args []string, ctx *zero.Ctx) bool {
+func (t *TemplateEngine) onRemoveCmd(args []string, ctx *zero.Ctx) {
 	if len(args) != 1 {
 		ctx.Send("格式: DelTemp [Trigger]")
-		return false
+		return
 	}
 	trigger := args[0]
 
@@ -61,17 +60,19 @@ func (t *TemplateEngine) onRemoveCmd(args []string, ctx *zero.Ctx) bool {
 	r := t.db.Where("trigger = ?", trigger).First(&tp)
 	if r.Error != nil {
 		ctx.Send("没有找到这一条模版")
-		return false
+		return
 	}
 
 	t.RemoveTemplateById(tp.Id)
 	ctx.Send("模版删除成功!")
-	return true
 }
 
-func (t *TemplateEngine) Init(mgr *core.ModuleMgr) {
+func (t *TemplateEngine) Init(mgr *core.ModuleMgr) bool {
+	mgr.RegisterEvent(core.ETGroupMsg, t.OnMsg)
 	mgr.RegisterCmd("AddTem", t.onAddCmd)
 	mgr.RegisterCmd("DelTem", t.onRemoveCmd)
+
+	return true
 }
 
 func (t *TemplateEngine) Stop(_ *core.ModuleMgr) {

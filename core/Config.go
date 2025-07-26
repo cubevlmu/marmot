@@ -17,7 +17,7 @@ type GlobalConfig struct {
 	MaxLogFiles      int      `koanf:"max_log_files" yaml:"max_log_files"`
 	CleanUpAmount    int      `koanf:"clean_up_amount" yaml:"clean_up_amount"`
 	CmdPrefix        string   `koanf:"cmd_prefix" yaml:"cmd_prefix"`
-	AdminQQ          []string `koanf:"admin" yaml:"admin"`
+	AdminQQ          []int64  `koanf:"admin" yaml:"admin"`
 	DbQueueSize      int      `koanf:"db_queue_size" yaml:"db_queue_size"`
 	MessageBufSize   int      `koanf:"message_buf_size" yaml:"message_buf_size"`
 	Modules          []string `koanf:"modules" yaml:"modules"`
@@ -34,7 +34,7 @@ func createDefaultConfig() {
 		DbQueueSize:      100,
 		CleanUpAmount:    10,
 		CmdPrefix:        ".",
-		AdminQQ:          []string{},
+		AdminQQ:          []int64{},
 		MessageBufSize:   100,
 		Modules:          []string{""},
 	}
@@ -66,13 +66,30 @@ func loadConfigFromFile(path string) error {
 	return k.Unmarshal("", AppConfig)
 }
 
-func (c *GlobalConfig) CheckIsAdmin(id string) bool {
+func (c *GlobalConfig) CheckIsAdmin(id int64) bool {
 	for _, s := range c.AdminQQ {
 		if s == id {
 			return true
 		}
 	}
 	return false
+}
+
+func InitConfig() {
+	if !IsSubDirFileExist("config.yaml") {
+		createDefaultConfig()
+		return
+	}
+
+	err := loadConfigFromFile(GetSubDirFilePath("config.yaml"))
+	if err != nil {
+		fmt.Printf("load config.yaml failed, err:%v\n", err)
+		createDefaultConfig()
+	}
+}
+
+type IConfig interface {
+	CreateDefaultConfig() interface{}
 }
 
 func SaveCustomConfigToFile[T any](path string, config *T) error {
@@ -97,15 +114,20 @@ func LoadCustomConfigFromFile[T any](path string, config *T) error {
 	return k.Unmarshal("", config)
 }
 
-func InitConfig() {
-	if !IsSubDirFileExist("config.yaml") {
-		createDefaultConfig()
-		return
+func InitCustomConfig[T IConfig](config *T, path string) error {
+	if config == nil {
+		return errors.New("config object is nil")
 	}
 
-	err := loadConfigFromFile(GetSubDirFilePath("config.yaml"))
-	if err != nil {
-		fmt.Printf("load config.yaml failed, err:%v\n", err)
-		createDefaultConfig()
+	r := LoadCustomConfigFromFile[T](path, config)
+	if r != nil {
+		r := *config
+		config = r.CreateDefaultConfig().(*T)
+		rs := SaveCustomConfigToFile[T](path, config)
+		if rs != nil {
+			LogWarn("[Config] failed to save default config to file: %v", rs)
+		}
 	}
+
+	return nil
 }

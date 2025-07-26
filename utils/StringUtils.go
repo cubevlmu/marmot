@@ -1,13 +1,13 @@
 package utils
 
-import "strings"
+import (
+	"unsafe"
+)
 
-func ParseInputCmd(input string, prefix string) (cmd string, args []string) {
-	parts := strings.Fields(input)
-	if len(parts) == 0 {
-		return "", nil
-	}
-	cmd = strings.TrimPrefix(parts[0], prefix)
-	args = parts[1:]
-	return
+func BytesToString(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
+}
+
+func StringToBytes(s string) (b []byte) {
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }

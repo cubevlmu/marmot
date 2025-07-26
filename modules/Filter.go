@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"github.com/RomiChan/syncx"
 	"github.com/cloudflare/ahocorasick"
-	zero "github.com/cubevlmu/CZeroBot"
-	"github.com/cubevlmu/CZeroBot/message"
 	"marmot/core"
+	zero "marmot/onebot"
+	"marmot/onebot/message"
 	"marmot/utils"
 	"os"
 	"sync/atomic"
@@ -29,7 +29,7 @@ type BlockCfg struct {
 	BanMsg    string        `koanf:"ban_msg" yaml:"ban_msg"`
 }
 
-func createDefaultBlockCfg() *BlockCfg {
+func (b BlockCfg) CreateDefaultConfig() interface{} {
 	return &BlockCfg{
 		Triggers:  []string{},
 		GroupIds:  []int64{},
@@ -45,40 +45,36 @@ func createDefaultBlockCfg() *BlockCfg {
 	}
 }
 
-type MsgBlock struct {
+type FilterEngine struct {
 	config   *BlockCfg
 	tempLock bool
 	matcher  *ahocorasick.Matcher
 	banMap   *syncx.Map[int64, *atomic.Int32]
 }
 
-func (m *MsgBlock) OnReqStop(_ []string, ctx *zero.Ctx) bool {
+func (m *FilterEngine) OnReqStop(args []string, ctx *zero.Ctx) {
 	if !core.IsGroupChat(ctx) {
-		return false
+		return
 	}
-	if !core.SenderIsBotAdmin(ctx) {
-		return false
+	if !core.IsBotAdmin(ctx) {
+		return
 	}
 	m.tempLock = !m.tempLock
 	ctx.Send(fmt.Sprintf("消息审查模式状态: %v 操作人: %s", m.tempLock, ctx.Event.Sender.Name()))
-	return true
+	return
 }
 
-func (m *MsgBlock) Init(mgr *core.ModuleMgr) {
+func (m *FilterEngine) Init(mgr *core.ModuleMgr) bool {
 	path := core.GetSubDirFilePath("filter.yaml")
-	if m.config == nil {
-		m.config = &BlockCfg{}
-	}
-
-	r := core.LoadCustomConfigFromFile(path, m.config)
+	m.config = &BlockCfg{}
+	r := core.InitCustomConfig[BlockCfg](m.config, path)
 	if r != nil {
-		r := core.SaveCustomConfigToFile(path, m.config)
-		if r != nil {
-			core.LogWarn("[MsgBlock] failed to save default config to file: %v", r.Error)
-		}
+		core.LogWarn("FilterEngine init config error: %v Using default instead.", r)
+		m.config = m.config.CreateDefaultConfig().(*BlockCfg)
 	}
 
-	mgr.RegisterCmd("MsgBlockLock", m.OnReqStop)
+	mgr.RegisterCmd("SwitchBlock", m.OnReqStop)
+	mgr.RegisterEvent(core.ETGroupMsg, m.OnMsg)
 
 	m.matcher = ahocorasick.NewStringMatcher(m.config.Triggers)
 
@@ -92,17 +88,19 @@ func (m *MsgBlock) Init(mgr *core.ModuleMgr) {
 			file, err := os.Open(bPath)
 			if err != nil {
 				core.LogError("failed to open ban history file: %v", err)
-				return
+				return false
 			}
 			defer file.Close()
 
 			decoder := gob.NewDecoder(file)
 			if err := decoder.Decode(&m.banMap); err != nil {
-				core.LogError("[MsgBlock] failed to decode ban history: %v", err)
+				core.LogError("[FilterEngine] failed to decode ban history: %v", err)
 				m.banMap = new(syncx.Map[int64, *atomic.Int32])
 			}
 		}
 	}
+
+	return true
 }
 
 func saveBanMap(path string, banMap *syncx.Map[int64, *atomic.Int32]) error {
@@ -116,11 +114,11 @@ func saveBanMap(path string, banMap *syncx.Map[int64, *atomic.Int32]) error {
 	return encoder.Encode(banMap)
 }
 
-func (m *MsgBlock) Stop(_ *core.ModuleMgr) {
+func (m *FilterEngine) Stop(_ *core.ModuleMgr) {
 	if m.config.BanUser {
 		r := saveBanMap(core.GetSubDirFilePath("banUserHistory.dat"), m.banMap)
 		if r != nil {
-			core.LogError("[MsgBlock] failed to save ban history file: %v", r)
+			core.LogError("[FilterEngine] failed to save ban history file: %v", r)
 		}
 	}
 
@@ -130,7 +128,7 @@ func (m *MsgBlock) Stop(_ *core.ModuleMgr) {
 	m.config = nil
 }
 
-func (m *MsgBlock) Reload(mg *core.ModuleMgr) {
+func (m *FilterEngine) Reload(mg *core.ModuleMgr) {
 	// I'm so lazy to implement this standalone :(
 	m.Stop(mg)
 	m.Init(mg)
@@ -200,7 +198,7 @@ func extractPlainText(m message.Message) []byte {
 	return cleanMessageBytes(buf)
 }
 
-func (m *MsgBlock) isWhitelistGroup(id int64) bool {
+func (m *FilterEngine) isWhitelistGroup(id int64) bool {
 	for _, groupId := range m.config.GroupIds {
 		if groupId == id {
 			return true
@@ -209,11 +207,8 @@ func (m *MsgBlock) isWhitelistGroup(id int64) bool {
 	return false
 }
 
-func (m *MsgBlock) OnMsg(ctx *zero.Ctx) {
+func (m *FilterEngine) OnMsg(ctx *zero.Ctx) {
 	if m.tempLock {
-		return
-	}
-	if ctx.Event.GroupID == 0 {
 		return
 	}
 	if !m.isWhitelistGroup(ctx.Event.GroupID) {
@@ -270,7 +265,7 @@ func (m *MsgBlock) OnMsg(ctx *zero.Ctx) {
 }
 
 func newMsgBlock() core.IModule {
-	return &MsgBlock{
+	return &FilterEngine{
 		config:   nil,
 		tempLock: false,
 	}
@@ -278,5 +273,5 @@ func newMsgBlock() core.IModule {
 
 // register for current module
 func init() {
-	core.RegisterNamed("msgblock", newMsgBlock)
+	core.RegisterNamed("filter", newMsgBlock)
 }
