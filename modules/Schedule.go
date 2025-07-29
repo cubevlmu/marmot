@@ -98,10 +98,10 @@ type ScheduleMgr struct {
 }
 
 func (s *ScheduleMgr) execute(action *taskItem) {
-	if action.index > len(s.cfg.Tasks) {
+	if action.index >= len(s.cfg.Tasks) {
 		return
 	}
-	r := s.cfg.Tasks[action.index]
+	r := s.cfg.Tasks[action.id]
 
 	if s.ctx == nil {
 		s.ctx = zero.GetBot(core.Common.BotQQ)
@@ -145,27 +145,41 @@ func (s *ScheduleMgr) run() {
 		if delay <= 0 {
 			heap.Pop(&s.tasks)
 			s.lock.Unlock()
-			s.execute(item)
+			go s.execute(item)
 
-			if item.ActionTimes > 1 || item.ActionTimes <= 0 {
+			if item.ActionTimes == -1 || item.ActionTimes > 1 {
+				// For infinite tasks (ActionTimes = -1), don't decrease ActionTimes
 				if item.ActionTimes > 0 {
-					item.ActionTimes--
+					item.ActionTimes-- // Decrease remaining times for repeated task
 				}
-				item.ActionTime += item.Interval // Interval 是 time.Duration.Nanoseconds()
+				item.ActionTime += item.Interval // Update action time based on interval
+
+				// Update config with new action time and remaining times
+				s.cfg.Tasks[item.id].ActionTime = time.Unix(0, item.ActionTime).Format("2006-01-02 15:04:05")
+				s.cfg.Tasks[item.id].ActionTimes = item.ActionTimes
+
+				// Re-add the task back to the queue
 				s.lock.Lock()
 				heap.Push(&s.tasks, item)
 				s.lock.Unlock()
+
+			} else {
+				// Remove the task if it's a one-time task
+				s.lock.Lock()
+				s.cfg.Tasks = append(s.cfg.Tasks[:item.id], s.cfg.Tasks[item.id+1:]...)
+				heap.Init(&s.tasks)
+				s.lock.Unlock()
 			}
+
 			continue
 		}
 
-		// wait a while to handle new task adding
 		timer := time.NewTimer(time.Duration(delay))
 		s.lock.Unlock()
 
 		select {
 		case <-timer.C:
-			// prepare to run next turn
+			// Prepare to run next turn
 		}
 	}
 }
@@ -179,6 +193,39 @@ func (s *ScheduleMgr) Init(_ *core.ModuleMgr) bool {
 		s.cfg = s.cfg.CreateDefaultConfig().(*ScheduleCfg)
 	}
 
+	// validate task time and handle infinite tasks (ActionTimes == -1)
+	validTasks := make([]ScheduleTask, 0)
+	currnetTm := time.Now().UnixNano()
+	for _, task := range s.cfg.Tasks {
+		t, err := parseTime(task.ActionTime)
+		if err != nil {
+			core.LogError("[ScheduleMgr] failed to parse action time %v", err)
+			continue
+		}
+
+		if t-currnetTm < 0 {
+			core.LogDebug("[ScheduleMgr] task with negative action time will be removed: %v", task)
+			continue
+		}
+
+		// Special handling for infinite tasks (ActionTimes == -1)
+		if task.ActionTimes == -1 {
+			core.LogDebug("[ScheduleMgr] infinite task detected, will repeat indefinitely: %v", task)
+		}
+
+		validTasks = append(validTasks, task)
+	}
+	s.cfg.Tasks = validTasks
+
+	// save to config
+	err := core.SaveCustomConfigToFile(path, s.cfg)
+	if err != nil {
+		core.LogError("[ScheduleMgr] failed to save updated scheduler config %v", err)
+	} else {
+		core.LogInfo("[ScheduleMgr] updated scheduler config saved successfully")
+	}
+
+	// init scheduler heap
 	s.tasks = make(taskHeap, len(s.cfg.Tasks))
 	for i, task := range s.cfg.Tasks {
 		t, e := parseTime(task.ActionTime)

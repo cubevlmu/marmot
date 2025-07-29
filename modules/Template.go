@@ -69,8 +69,9 @@ func (t *TemplateEngine) onRemoveCmd(args []string, ctx *zero.Ctx) {
 
 func (t *TemplateEngine) Init(mgr *core.ModuleMgr) bool {
 	mgr.RegisterEvent(core.ETGroupMsg, t.OnMsg)
-	mgr.RegisterCmd("AddTem", t.onAddCmd)
-	mgr.RegisterCmd("DelTem", t.onRemoveCmd)
+	mgr.RegisterCmd().
+		RegisterGroupAdmin("AddTem", t.onAddCmd).
+		RegisterGroupAdmin("DelTem", t.onRemoveCmd)
 
 	return true
 }

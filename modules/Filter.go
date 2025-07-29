@@ -52,13 +52,7 @@ type FilterEngine struct {
 	banMap   *syncx.Map[int64, *atomic.Int32]
 }
 
-func (m *FilterEngine) OnReqStop(args []string, ctx *zero.Ctx) {
-	if !core.IsGroupChat(ctx) {
-		return
-	}
-	if !core.IsBotAdmin(ctx) {
-		return
-	}
+func (m *FilterEngine) OnReqStop(_ []string, ctx *zero.Ctx) {
 	m.tempLock = !m.tempLock
 	ctx.Send(fmt.Sprintf("消息审查模式状态: %v 操作人: %s", m.tempLock, ctx.Event.Sender.Name()))
 	return
@@ -73,7 +67,8 @@ func (m *FilterEngine) Init(mgr *core.ModuleMgr) bool {
 		m.config = m.config.CreateDefaultConfig().(*BlockCfg)
 	}
 
-	mgr.RegisterCmd("SwitchBlock", m.OnReqStop)
+	mgr.RegisterCmd().
+		RegisterGroupAdmin("SwitchBlock", m.OnReqStop)
 	mgr.RegisterEvent(core.ETGroupMsg, m.OnMsg)
 
 	m.matcher = ahocorasick.NewStringMatcher(m.config.Triggers)

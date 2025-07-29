@@ -26,8 +26,6 @@ func createModule(name string) IModule {
 	return nil
 }
 
-type CmdHandler func(args []string, ctx *zero.Ctx)
-
 type EventType int
 
 const (
@@ -46,7 +44,7 @@ type Event struct {
 type ModuleMgr struct {
 	loadedModules map[string]IModule
 	events        map[EventType][]Event
-	cmds          map[string]CmdHandler
+	cmd           *CmdMgr
 }
 
 var sharedInstance *ModuleMgr
@@ -59,19 +57,13 @@ func NewModuleMgr() *ModuleMgr {
 	sharedInstance = &ModuleMgr{
 		loadedModules: make(map[string]IModule),
 		events:        make(map[EventType][]Event),
-		cmds:          make(map[string]CmdHandler),
+		cmd:           newCmdMgr(),
 	}
 	return sharedInstance
 }
 
-func (m *ModuleMgr) RegisterCmd(label string, handler CmdHandler) bool {
-	_, ok := m.cmds[label]
-	if ok {
-		LogError("Duplicated cmd: %s", label)
-		return false
-	}
-	m.cmds[label] = handler
-	return true
+func (m *ModuleMgr) RegisterCmd() *CmdMgr {
+	return m.cmd
 }
 
 func (m *ModuleMgr) RegisterEvent(tp EventType, handler EventHandler) bool {
@@ -93,7 +85,7 @@ func (m *ModuleMgr) RegisterEvent(tp EventType, handler EventHandler) bool {
 }
 
 func (m *ModuleMgr) UnloadAll() {
-	LogInfo("[ModuleMgr] Unloading all modules...")
+	LogInfo("[Bot] Unloading all modules...")
 	for _, module := range m.loadedModules {
 		module.Stop(m)
 	}
@@ -101,21 +93,11 @@ func (m *ModuleMgr) UnloadAll() {
 	m.loadedModules = nil
 }
 
-func (m *ModuleMgr) onCmd(msg string, c *zero.Ctx) {
-	lb, arg := parseInputCmd(msg, AppConfig.CmdPrefix)
-	cmd, ok := m.cmds[lb]
-	if !ok {
-		LogError("[ModuleMgr] Command not found: %s", msg)
-		return
-	}
-	cmd(arg, c)
-}
-
 func (m *ModuleMgr) HandleEvent(c *zero.Ctx) {
 	var msgType EventType
 	if c.Event.PostType == "message" && c.Event.MessageType == "group" {
 		if strings.HasPrefix(c.Event.RawMessage, AppConfig.CmdPrefix) {
-			m.onCmd(c.ExtractPlainText(), c)
+			m.cmd.OnCmd(c)
 			return
 		} else {
 			msgType = ETGroupMsg
@@ -145,27 +127,27 @@ func (m *ModuleMgr) GetModule(key string) *IModule {
 func (m *ModuleMgr) LoadAll() {
 	count := 1
 	for i, module := range AppConfig.Modules {
-		LogDebug("[ModuleMgr] loading module %v/%v : %s", i, len(AppConfig.Modules), module)
+		LogDebug("[Bot] loading module %v/%v : %s", i, len(AppConfig.Modules), module)
 		r := createModule(module)
 		if r == nil {
-			LogWarn("[ModuleMgr] failed to load module : %s , not found or invalid key", module)
+			LogWarn("[Bot] failed to load module : %s , not found or invalid key", module)
 			continue
 		}
 		if !r.Init(m) {
-			LogError("[ModuleMgr] failed to load module : %s , init failed", module)
+			LogError("[Bot] failed to load module : %s , init failed", module)
 			continue
 		}
 		m.loadedModules[module] = r
 		count++
 	}
-	LogInfo("[ModuleMgr] loaded %d modules", count)
+	LogInfo("[Bot] loaded %d modules", count)
 }
 
 func (m *ModuleMgr) ReloadAll() {
 	for _, module := range m.loadedModules {
 		module.Reload(m)
 	}
-	LogInfo("[ModuleMgr] reloaded %d modules", len(m.loadedModules))
+	LogInfo("[Bot] reloaded %d modules", len(m.loadedModules))
 }
 
 func (m *ModuleMgr) ListAll() []string {

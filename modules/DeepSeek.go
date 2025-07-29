@@ -135,7 +135,9 @@ func (s *DeepSeekAI) Init(mgr *core.ModuleMgr) bool {
 		s.config = s.config.CreateDefaultConfig().(*DeepSeekConfig)
 	}
 
-	mgr.RegisterCmd("deepseek", s.onCmd)
+	mgr.RegisterCmd().
+		RegisterMember("deepseek", s.onCmd)
+
 	// start service
 	go s.queueListner()
 
