@@ -126,8 +126,8 @@ func (m *ModuleMgr) GetModule(key string) *IModule {
 
 func (m *ModuleMgr) LoadAll() {
 	count := 1
-	for i, module := range AppConfig.Modules {
-		LogDebug("[Bot] loading module %v/%v : %s", i, len(AppConfig.Modules), module)
+	for _, module := range AppConfig.Modules {
+		LogDebug("[Bot] loading module %v/%v : %s", count, len(AppConfig.Modules), module)
 		r := createModule(module)
 		if r == nil {
 			LogWarn("[Bot] failed to load module : %s , not found or invalid key", module)
@@ -140,7 +140,7 @@ func (m *ModuleMgr) LoadAll() {
 		m.loadedModules[module] = r
 		count++
 	}
-	LogInfo("[Bot] loaded %d modules", count)
+	LogInfo("[Bot] loaded %d modules", count-1)
 }
 
 func (m *ModuleMgr) ReloadAll() {

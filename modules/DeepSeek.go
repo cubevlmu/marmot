@@ -109,7 +109,10 @@ func (s *DeepSeekAI) request(prompt string) (string, error) {
 
 func (s *DeepSeekAI) queueListner() {
 	for {
-		r := s.reqQueue.WaitDequeue()
+		r, ok := s.reqQueue.WaitDequeue()
+		if !ok {
+			continue
+		}
 		rq, e := s.request(r.prompt)
 		if s.ctx == nil {
 			s.ctx = zero.GetBot(core.Common.BotQQ)

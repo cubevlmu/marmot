@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	kyaml "github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
@@ -46,7 +47,8 @@ func InitCustomConfig[T IConfig](config *T, path string) error {
 		config = r.CreateDefaultConfig().(*T)
 		rs := SaveCustomConfigToFile[T](path, config)
 		if rs != nil {
-			LogWarn("[Config] failed to save default config to file: %v", rs)
+			fmt.Printf("[Config] failed to save default config to file: %v\n", rs)
+			return rs
 		}
 	}
 

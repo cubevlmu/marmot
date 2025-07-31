@@ -75,10 +75,10 @@ func GetSubDirFilePath(name string) string {
 }
 
 func GetDataDir() string {
-	r, err := filepath.Abs("bot")
+	wd, err := os.Getwd()
 	if err != nil {
-		fmt.Printf("[ERROR] Failed to get absolute path, err:%e\n", err)
+		fmt.Printf("[ERROR] Failed to get working directory, err:%v\n", err)
 		return ""
 	}
-	return r
+	return filepath.Join(wd, "bot")
 }

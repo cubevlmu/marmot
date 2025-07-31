@@ -49,7 +49,10 @@ func newCmdMgr() *CmdMgr {
 
 func (m *CmdMgr) processor() {
 	for {
-		t := m.buf.WaitDequeue()
+		t, e := m.buf.WaitDequeue()
+		if !e {
+			continue
+		}
 		id := t.c.Event.Sender.ID
 		lTime, ok := m.reqMap[id]
 		if !ok {

@@ -1,8 +1,10 @@
 package core
 
 import (
+	"errors"
 	"gorm.io/gorm"
 	"marmot/utils"
+	"sync"
 )
 
 type TaskType int
@@ -12,7 +14,7 @@ const (
 	TTypeInsert
 	TTypeUpdate
 	TTypeDelete // hard delete
-	TTypeRemove // mark delete
+	TTypeRemove // soft delete
 )
 
 type QueueTask struct {
@@ -24,112 +26,116 @@ type QueueTask struct {
 type DbCtx struct {
 	Db         *gorm.DB
 	writeQueue *utils.RingQueue[QueueTask]
+	closeCh    chan struct{}
+	wg         sync.WaitGroup
 }
 
 func newDbCtx(name string) *DbCtx {
 	path := GetSubDirFilePath(name)
-	ctx := &DbCtx{
-		writeQueue: utils.NewRingQueue[QueueTask](100),
-	}
-	var err error
-	ctx.Db, err = utils.OpenSqlite(path)
+	db, err := utils.OpenSqlite(path)
 	if err != nil {
 		LogError("[Db] failed to open database: %v", err)
 		return nil
 	}
 
-	go actionWorker(ctx)
-
+	ctx := &DbCtx{
+		Db:         db,
+		writeQueue: utils.NewRingQueue[QueueTask](AppConfig.DbQueueSize),
+		closeCh:    make(chan struct{}),
+	}
+	ctx.wg.Add(1)
+	go ctx.actionWorker()
 	return ctx
 }
 
-func actionWorker(db *DbCtx) {
+func (db *DbCtx) Close() {
+	close(db.closeCh)
+	db.writeQueue.Close()
+	db.wg.Wait()
+	//_ = db.Db.Close()
+	db.Db = nil
+}
+
+func (db *DbCtx) actionWorker() {
+	defer db.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			LogError("[Db] panic in worker: %v", r)
+		}
+	}()
+
 	for {
-		d := db.writeQueue.WaitDequeue()
+		select {
+		case <-db.closeCh:
+			return
+		default:
+		}
+
+		d, ok := db.writeQueue.WaitDequeue()
+		if !ok {
+			return
+		}
 
 		var r *gorm.DB
 		switch d.taskType {
 		case TTypeInsert:
 			r = db.Db.Create(d.taskData)
-			break
 		case TTypeUpdate:
 			r = db.Db.Model(d.taskData).Updates(d.taskData)
-			break
 		case TTypeRemove:
 		case TTypeDelete:
 			r = db.Db.Delete(d.taskData)
-			break
 		case TTypeUnknown:
 			r = nil
-			break
 		}
 
 		if r == nil || r.Error != nil {
-			LogError("[Db] run queue task failed [type : %v error : %v]", d.taskType, r)
+			LogError("[Db] run queue task failed [type: %v, error: %v]", d.taskType, r)
 		}
 
 		if d.resultCh != nil {
+			var err error
+			if r != nil {
+				err = r.Error
+			} else {
+				err = errors.New("nil db result")
+			}
+
 			select {
-			case d.resultCh <- r.Error:
+			case d.resultCh <- err:
 			default:
-				// skip blocking
+				// Skip blocked
 			}
 		}
 	}
 }
 
-func (db *DbCtx) Insert(data interface{}) error {
+func (db *DbCtx) submit(taskType TaskType, data interface{}) error {
 	ch := make(chan error, 1)
 	tsk := QueueTask{
-		taskType: TTypeInsert,
+		taskType: taskType,
 		taskData: data,
 		resultCh: ch,
 	}
-	r := db.writeQueue.Enqueue(tsk)
-	if r != nil {
-		return r
+	err := db.writeQueue.Enqueue(tsk)
+	if err != nil {
+		return err
 	}
 	return <-ch
+}
+
+func (db *DbCtx) Insert(data interface{}) error {
+	return db.submit(TTypeInsert, data)
 }
 
 func (db *DbCtx) Update(data interface{}) error {
-	ch := make(chan error, 1)
-	tsk := QueueTask{
-		taskType: TTypeUpdate,
-		taskData: data,
-		resultCh: ch,
-	}
-	r := db.writeQueue.Enqueue(tsk)
-	if r != nil {
-		return r
-	}
-	return <-ch
+	return db.submit(TTypeUpdate, data)
 }
 
 func (db *DbCtx) Remove(data interface{}) error {
-	ch := make(chan error, 1)
-	tsk := QueueTask{
-		taskType: TTypeRemove,
-		taskData: data,
-		resultCh: ch,
-	}
-	r := db.writeQueue.Enqueue(tsk)
-	if r != nil {
-		return r
-	}
-	return <-ch
+	return db.submit(TTypeRemove, data)
 }
 
 func (db *DbCtx) Delete(data interface{}) error {
-	ch := make(chan error, 1)
-	tsk := QueueTask{
-		taskType: TTypeDelete,
-		taskData: data,
-		resultCh: ch,
-	}
-	r := db.writeQueue.Enqueue(tsk)
-	if r != nil {
-		return r
-	}
-	return <-ch
+	return db.submit(TTypeDelete, data)
 }
