@@ -77,7 +77,6 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// Connect 监听ws服务
 func (wss *WSServer) Connect() {
 	network, address := utils.ResolveURI(wss.URL)
 	uri, err := url.Parse(address)
@@ -222,7 +221,6 @@ func (wssc *WSSCaller) nextSeq() uint64 {
 	return atomic.AddUint64(&wssc.seq, 1)
 }
 
-// CallAPI 发送ws请求
 func (wssc *WSSCaller) CallAPI(req APIRequest) (APIResponse, error) {
 	ch := make(chan APIResponse, 1)
 	req.Echo = wssc.nextSeq()
@@ -238,7 +236,7 @@ func (wssc *WSSCaller) CallAPI(req APIRequest) (APIResponse, error) {
 	}
 	LogDebug("[wss] sending api request to server: %v", &req)
 
-	select { // 等待数据返回
+	select {
 	case rsp, ok := <-ch:
 		if !ok {
 			return nullResponse, io.ErrClosedPipe

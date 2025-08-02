@@ -95,9 +95,8 @@ func (ctx *Ctx) Send(msg interface{}) message.ID {
 	return message.NewMessageIDFromInteger(ctx.SendPrivateMessage(event.UserID, msg))
 }
 
-// SendChain 快捷发送消息/合并转发-消息链
 func (ctx *Ctx) SendChain(msg ...message.Segment) message.ID {
-	if BotConfig.AddSpaceAfterAt && len(msg) > 0 {
+	if len(msg) > 0 {
 		newMsg := make(message.Message, 0, len(msg)*2)
 		for i := 0; i < len(msg)-1; i++ {
 			newMsg = append(newMsg, msg[i])

@@ -32,6 +32,9 @@ const (
 	ETUnknown EventType = iota
 	ETGroupMsg
 	ETPrivateMsg
+	ETGroupQuit
+	ETGroupJoin
+	ETGroupRequestJoin
 )
 
 type EventHandler func(ctx *zero.Ctx)
@@ -101,6 +104,12 @@ func (m *ModuleMgr) HandleEvent(c *zero.Ctx) {
 			return
 		} else {
 			msgType = ETGroupMsg
+		}
+	} else if c.Event.PostType == "notice" {
+		if c.Event.DetailType == "group_decrease" {
+			msgType = ETGroupQuit
+		} else if c.Event.DetailType == "group_increase" {
+			msgType = ETGroupJoin
 		}
 	} else if c.Event.PostType == "message" && c.Event.MessageType == "private" {
 		msgType = ETPrivateMsg

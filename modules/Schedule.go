@@ -2,8 +2,12 @@ package modules
 
 import (
 	"container/heap"
+	"fmt"
 	"marmot/core"
 	zero "marmot/onebot"
+	"marmot/onebot/message"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -45,7 +49,7 @@ func (s ScheduleCfg) CreateDefaultConfig() interface{} {
 	return &ScheduleCfg{
 		Tasks: []ScheduleTask{
 			{
-				ActionTime:  "2025-07-26 22:00:00",
+				ActionTime:  "2025-09-26 22:00:00",
 				ActionTimes: 3,
 				Interval:    "30s",
 				TaskType:    STBroadcast,
@@ -171,6 +175,11 @@ func (s *ScheduleMgr) run() {
 				s.lock.Unlock()
 			}
 
+			r := core.SaveCustomConfigToFile(core.GetSubDirFilePath("scheduler.yml"), s.cfg)
+			if r != nil {
+				core.LogError("[Schedule] failed to update scheduler.yml err: %v", r)
+			}
+
 			continue
 		}
 
@@ -184,7 +193,7 @@ func (s *ScheduleMgr) run() {
 	}
 }
 
-func (s *ScheduleMgr) Init(_ *core.ModuleMgr) bool {
+func (s *ScheduleMgr) Init(mgr *core.ModuleMgr) bool {
 	s.cfg = &ScheduleCfg{}
 	path := core.GetSubDirFilePath("scheduler.yml")
 	r := core.InitCustomConfig(s.cfg, path)
@@ -252,11 +261,19 @@ func (s *ScheduleMgr) Init(_ *core.ModuleMgr) bool {
 	s.running = true
 	go s.run()
 
+	mgr.RegisterCmd().
+		RegisterGroupAdmin("RegTask", s.onRegTask)
+
 	return true
 }
 
 func (s *ScheduleMgr) Stop(_ *core.ModuleMgr) {
+	r := core.SaveCustomConfigToFile(core.GetSubDirFilePath("scheduler.yml"), s.cfg)
+	if r != nil {
+		core.LogError("[ScheduleMgr] failed to save scheduler.yml err: %v", r)
+	}
 
+	s.cfg = nil
 }
 
 func (s *ScheduleMgr) Reload(mgr *core.ModuleMgr) {
@@ -264,8 +281,61 @@ func (s *ScheduleMgr) Reload(mgr *core.ModuleMgr) {
 	s.Stop(mgr)
 }
 
-func (s *ScheduleMgr) OnMsg(_ *zero.Ctx) {
-	return
+func (s *ScheduleMgr) onRegTask(args []string, ctx *zero.Ctx) {
+	if len(args) != 5 {
+		ctx.SendGroupMessage(ctx.Event.GroupID, message.Text("使用方法 RegTask [2025:08:02 15:00] [1] [10s] [1] [\"群聊禁言\"]"))
+		return
+	}
+
+	t, e := parseTime(strings.ReplaceAll(args[0], "\"", ""))
+	if e != nil {
+		ctx.SendGroupMessage(ctx.Event.GroupID, message.Text("错误的时间格式! xxxx:xx:xx xx:xx:xx"))
+		return
+	}
+
+	times, e := strconv.Atoi(args[1])
+	if e != nil {
+		ctx.SendGroupMessage(ctx.Event.GroupID, message.Text("转换次数失败!"))
+		return
+	}
+
+	dur, e := time.ParseDuration(args[2])
+	if e != nil {
+		ctx.SendGroupMessage(ctx.Event.GroupID, message.Text("错误的间隔时间"))
+		return
+	}
+
+	types, e := strconv.Atoi(args[3])
+	if e != nil {
+		ctx.SendGroupMessage(ctx.Event.GroupID, message.Text("转换类型失败!"))
+		return
+	}
+
+	s.cfg.Tasks = append(s.cfg.Tasks, ScheduleTask{
+		ActionTime:  args[0],
+		ActionTimes: times,
+		TaskType:    STaskType(types),
+		Interval:    args[2],
+		TaskData:    strings.ReplaceAll(args[3], "\"", ""),
+		Group:       []int64{ctx.Event.GroupID},
+	})
+
+	e = core.SaveCustomConfigToFile(core.GetSubDirFilePath("scheduler.yml"), s.cfg)
+	if e != nil {
+		core.LogError("[ScheduleMgr] failed to save scheduler.yml err: %v", e)
+	}
+
+	s.lock.Lock()
+	heap.Push(&s.tasks, &taskItem{
+		ActionTime:  t,
+		ActionTimes: times,
+		Interval:    int64(dur),
+		id:          int64(len(s.tasks)),
+		index:       len(s.cfg.Tasks),
+	})
+	s.lock.Unlock()
+
+	ctx.SendGroupMessage(ctx.Event.GroupID, fmt.Sprintf("成功添加! %v", s.cfg.Tasks[len(s.cfg.Tasks)-1]))
 }
 
 func init() {
