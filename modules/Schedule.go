@@ -316,7 +316,7 @@ func (s *ScheduleMgr) onRegTask(args []string, ctx *zero.Ctx) {
 		ActionTimes: times,
 		TaskType:    STaskType(types),
 		Interval:    args[2],
-		TaskData:    strings.ReplaceAll(args[3], "\"", ""),
+		TaskData:    strings.ReplaceAll(args[4], "\"", ""),
 		Group:       []int64{ctx.Event.GroupID},
 	})
 
