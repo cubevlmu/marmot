@@ -1,15 +1,20 @@
 package modules
 
 import (
-	"encoding/gob"
+	"bufio"
 	"fmt"
 	"github.com/RomiChan/syncx"
 	"github.com/cloudflare/ahocorasick"
+	"gorm.io/gorm"
+	"io/fs"
 	"marmot/core"
 	zero "marmot/onebot"
 	"marmot/onebot/message"
 	"marmot/utils"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
@@ -20,22 +25,16 @@ const (
 )
 
 type BlockCfg struct {
-	Triggers  []string      `koanf:"triggers" yaml:"triggers"`
-	GroupIds  []int64       `koanf:"group_ids" yaml:"group_ids"`
-	AutoReply bool          `koanf:"auto_reply" yaml:"auto_reply"`
-	ReplyMsg  string        `koanf:"reply_msg" yaml:"reply_msg"`
-	BanUser   bool          `koanf:"ban_user" yaml:"ban_user"`
-	BanRule   map[int]int64 `koanf:"ban_rule" yaml:"ban_rule"`
-	BanMsg    string        `koanf:"ban_msg" yaml:"ban_msg"`
+	GroupIds []int64       `koanf:"group_ids" yaml:"group_ids"`
+	BanUser  bool          `koanf:"ban_user" yaml:"ban_user"`
+	BanRule  map[int]int64 `koanf:"ban_rule" yaml:"ban_rule"`
+	BanMsg   string        `koanf:"ban_msg" yaml:"ban_msg"`
 }
 
 func (b BlockCfg) CreateDefaultConfig() interface{} {
 	return &BlockCfg{
-		Triggers:  []string{},
-		GroupIds:  []int64{},
-		AutoReply: false,
-		ReplyMsg:  "%s 触发了违禁词 %s bot自动撤回",
-		BanUser:   false,
+		GroupIds: []int64{},
+		BanUser:  false,
 		BanRule: map[int]int64{
 			1: 1 * 60,
 			2: 10 * 60,
@@ -45,17 +44,131 @@ func (b BlockCfg) CreateDefaultConfig() interface{} {
 	}
 }
 
+type BanHistoryItem struct {
+	Id    int64 `gorm:"primaryKey"`
+	Times int32
+}
+
 type FilterEngine struct {
-	config   *BlockCfg
-	tempLock bool
-	matcher  *ahocorasick.Matcher
-	banMap   *syncx.Map[int64, *atomic.Int32]
+	config    *BlockCfg
+	db        *gorm.DB
+	plainText []string
+	tempLock  bool
+	matcher   *ahocorasick.Matcher
+	regexList []*regexp.Regexp
+	banMap    *syncx.Map[int64, *atomic.Int32]
+}
+
+func isRegexLine(line string) bool {
+	const special = `.^$*+?{}[]()|\`
+	return strings.ContainsAny(line, special)
+}
+
+func (m *FilterEngine) loadRules() error {
+	pth, r := core.GetSubDir("rules")
+	if !r {
+		return fmt.Errorf("failed to setup rules's directory at %s", pth)
+	}
+
+	err := filepath.WalkDir(pth, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".txt") {
+			return nil
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+
+			if isRegexLine(line) {
+				pattern := line[1 : len(line)-1]
+				re, err := regexp.Compile(pattern)
+				if err != nil {
+					return err
+				}
+				core.LogDebug("[Filter] loaded regx rule %s", pattern)
+				m.regexList = append(m.regexList, re)
+			} else {
+				core.LogDebug("[Filter] loaded normal rule %s", line)
+				m.plainText = append(m.plainText, line)
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if len(m.plainText) > 0 {
+		m.matcher = ahocorasick.NewStringMatcher(m.plainText)
+	}
+	return nil
 }
 
 func (m *FilterEngine) OnReqStop(_ []string, ctx *zero.Ctx) {
 	m.tempLock = !m.tempLock
 	ctx.Send(fmt.Sprintf("消息审查模式状态: %v 操作人: %s", m.tempLock, ctx.Event.Sender.Name()))
 	return
+}
+
+func (m *FilterEngine) readBanData(id int64) int32 {
+	r, ok := m.banMap.Load(id)
+	if ok {
+		return r.Load()
+	} else {
+		var iRel BanHistoryItem
+		rT := m.db.Where("id = ?", id).First(&iRel)
+		if rT.Error != nil {
+			r = &atomic.Int32{}
+			r.Store(0)
+			m.banMap.Store(id, r)
+			err := core.Common.Database.Insert(&BanHistoryItem{
+				Id:    id,
+				Times: 0,
+			})
+			if err != nil {
+				core.LogError("[Filter] failed to insert ban history item: %v", err)
+			}
+			return 0
+		}
+
+		r = &atomic.Int32{}
+		r.Store(iRel.Times)
+		m.banMap.Store(id, r)
+		return iRel.Times
+	}
+}
+
+func (m *FilterEngine) updateBanData(id int64, times int32) {
+	rT, ok := m.banMap.Load(id)
+	if !ok {
+		core.LogError("[Filter] invalid operation 'updateBanData'")
+		return
+	}
+	rT.Store(times)
+	m.banMap.Store(id, rT)
+
+	err := core.Common.Database.Update(&BanHistoryItem{
+		Id:    id,
+		Times: times,
+	})
+	if err != nil {
+		core.LogError("[Filter] failed to update ban history item: %v", err)
+	}
 }
 
 func (m *FilterEngine) Init(mgr *core.ModuleMgr) bool {
@@ -71,52 +184,27 @@ func (m *FilterEngine) Init(mgr *core.ModuleMgr) bool {
 		RegisterGroupAdmin("SwitchBlock", m.OnReqStop)
 	mgr.RegisterEvent(core.ETGroupMsg, m.OnMsg)
 
-	m.matcher = ahocorasick.NewStringMatcher(m.config.Triggers)
-
-	fmt.Printf("banrule: %v \n", m.config.BanUser)
+	err := m.loadRules()
+	if err != nil {
+		core.LogWarn("FilterEngine load rules error: %v", err)
+		return false
+	}
 
 	if m.config.BanUser {
 		m.banMap = new(syncx.Map[int64, *atomic.Int32])
-		bPath := core.GetSubDirFilePath("banUserHistory.dat")
+		m.db = core.Common.Database.Db
 
-		if utils.IsFileExists(bPath) {
-			file, err := os.Open(bPath)
-			if err != nil {
-				core.LogError("failed to open ban history file: %v", err)
-				return false
-			}
-			defer file.Close()
-
-			decoder := gob.NewDecoder(file)
-			if err := decoder.Decode(&m.banMap); err != nil {
-				core.LogError("[FilterEngine] failed to decode ban history: %v", err)
-				m.banMap = new(syncx.Map[int64, *atomic.Int32])
-			}
+		err := m.db.AutoMigrate(&BanHistoryItem{})
+		if err != nil {
+			core.LogError("[Filter] Database auto-migrate error: %v", err)
+			return false
 		}
 	}
 
 	return true
 }
 
-func saveBanMap(path string, banMap *syncx.Map[int64, *atomic.Int32]) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := gob.NewEncoder(file)
-	return encoder.Encode(banMap)
-}
-
 func (m *FilterEngine) Stop(_ *core.ModuleMgr) {
-	if m.config.BanUser {
-		r := saveBanMap(core.GetSubDirFilePath("banUserHistory.dat"), m.banMap)
-		if r != nil {
-			core.LogError("[FilterEngine] failed to save ban history file: %v", r)
-		}
-	}
-
 	m.banMap = nil
 	m.matcher = nil
 	m.tempLock = false
@@ -216,24 +304,28 @@ func (m *FilterEngine) OnMsg(ctx *zero.Ctx) {
 	var a = ctx.Event.RawMessage
 	var b = ctx.Event.Message.ExtractPlainText()
 	core.LogDebug("MsgRaw %s MsgPlain %s", a, b)
-	hints := m.matcher.MatchThreadSafe(extractPlainText(ctx.Event.Message))
-	if len(hints) == 0 {
-		return
+
+	txt := extractPlainText(ctx.Event.Message)
+	isMatched := false
+	for _, r := range m.regexList {
+		if r.Match(txt) {
+			isMatched = true
+			break
+		}
+	}
+	if !isMatched {
+		hints := m.matcher.MatchThreadSafe(txt)
+		if len(hints) == 0 {
+			return
+		}
 	}
 	ctx.DeleteMessage(ctx.Event.MessageID)
 
 	if m.config.BanUser {
-		r, ok := m.banMap.Load(ctx.Event.Sender.ID)
-		if ok {
-			r.Add(1)
-			m.banMap.Store(ctx.Event.Sender.ID, r)
-		} else {
-			r = &atomic.Int32{}
-			r.Store(1)
-			m.banMap.Store(ctx.Event.Sender.ID, r)
-		}
+		rawVal := m.readBanData(ctx.Event.Sender.ID)
+		rawVal += 1
+		m.updateBanData(ctx.Event.Sender.ID, rawVal)
 
-		rawVal := r.Load()
 		tp, ok2 := m.config.BanRule[int(rawVal)]
 
 		if ok2 && tp > 0 {
@@ -251,18 +343,14 @@ func (m *FilterEngine) OnMsg(ctx *zero.Ctx) {
 		}
 	}
 
-	if !m.config.AutoReply {
-		return
-	}
-	for _, idx := range hints {
-		ctx.Send(fmt.Sprintf(m.config.ReplyMsg, ctx.Event.Sender.Name(), m.config.Triggers[idx]))
-	}
 }
 
 func newMsgBlock() core.IModule {
 	return &FilterEngine{
-		config:   nil,
-		tempLock: false,
+		config:    nil,
+		tempLock:  false,
+		plainText: make([]string, 0),
+		regexList: make([]*regexp.Regexp, 0),
 	}
 }
 

@@ -2,7 +2,9 @@ package core
 
 import (
 	zero "marmot/onebot"
+	"marmot/onebot/message"
 	"strings"
+	"time"
 )
 
 type IModule interface {
@@ -92,8 +94,9 @@ func (m *ModuleMgr) UnloadAll() {
 	for _, module := range m.loadedModules {
 		module.Stop(m)
 	}
-	m.events = nil
-	m.loadedModules = nil
+	m.events = make(map[EventType][]Event)
+	m.loadedModules = make(map[string]IModule)
+	m.cmd = newCmdMgr()
 }
 
 func (m *ModuleMgr) HandleEvent(c *zero.Ctx) {
@@ -135,6 +138,7 @@ func (m *ModuleMgr) GetModule(key string) *IModule {
 
 func (m *ModuleMgr) LoadAll() {
 	count := 1
+	m.registerInternalCmds()
 	for _, module := range AppConfig.Modules {
 		LogDebug("[Bot] loading module %v/%v : %s", count, len(AppConfig.Modules), module)
 		r := createModule(module)
@@ -152,11 +156,17 @@ func (m *ModuleMgr) LoadAll() {
 	LogInfo("[Bot] loaded %d modules", count-1)
 }
 
-func (m *ModuleMgr) ReloadAll() {
-	for _, module := range m.loadedModules {
-		module.Reload(m)
-	}
-	LogInfo("[Bot] reloaded %d modules", len(m.loadedModules))
+func (m *ModuleMgr) registerInternalCmds() {
+	m.cmd.RegisterGroupAdmin("reload", m.reloadCmdInternal)
+}
+
+func (m *ModuleMgr) reloadCmdInternal(_ []string, c *zero.Ctx) {
+	beginTime := time.Now().UnixNano()
+	m.UnloadAll()
+	m.LoadAll()
+	durSecs := time.Now().UnixNano() - beginTime
+	LogInfo("[Bot] Hot reload done in %v seconds", time.Duration(durSecs).Seconds())
+	c.SendGroupMessage(c.Event.GroupID, MakeReply(message.Text("热重载完毕 耗时(s) "), message.Text(time.Duration(durSecs).Seconds())))
 }
 
 func (m *ModuleMgr) ListAll() []string {
